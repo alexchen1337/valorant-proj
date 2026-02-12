@@ -23,4 +23,15 @@ std::vector<RollingMetric> rolling_win_rate(
 DecayCurveModel decay_curve(
     const std::vector<Session>& sessions, int min_session_length = 3);
 
+std::vector<AgentPerformance> performance_by_agent(
+    const std::vector<PlayerMatchSummary>& matches);
+
+std::vector<MapPerformance> performance_by_map(
+    const std::vector<PlayerMatchSummary>& matches);
+
+OverviewStats compute_overview(
+    const std::vector<PlayerMatchSummary>& matches,
+    const std::vector<AgentPerformance>& agents,
+    const std::vector<MapPerformance>& maps);
+
 } // namespace valorant

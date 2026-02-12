@@ -1,6 +1,7 @@
 #include "valorant/api_client.hpp"
 #include <httplib.h>
 #include <algorithm>
+#include <ctime>
 #include <thread>
 #include <unordered_map>
 
@@ -8,18 +9,39 @@ namespace valorant {
 
 namespace {
 
-TimePoint parse_timestamp(int64_t epoch_secs) {
+TimePoint parse_epoch(int64_t epoch_secs) {
     return std::chrono::system_clock::from_time_t(static_cast<time_t>(epoch_secs));
 }
 
+TimePoint parse_iso8601(const std::string& s) {
+    std::tm tm{};
+    sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d",
+           &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+           &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    return std::chrono::system_clock::from_time_t(timegm(&tm));
+}
+
 int safe_int(const nlohmann::json& j, const std::string& key, int fallback = 0) {
-    if (j.contains(key) && !j[key].is_null()) return j[key].get<int>();
+    if (j.contains(key) && !j[key].is_null() && j[key].is_number())
+        return j[key].get<int>();
     return fallback;
 }
 
 std::string safe_str(const nlohmann::json& j, const std::string& key,
                      const std::string& fallback = "") {
-    if (j.contains(key) && !j[key].is_null()) return j[key].get<std::string>();
+    if (j.contains(key) && !j[key].is_null() && j[key].is_string())
+        return j[key].get<std::string>();
+    return fallback;
+}
+
+std::string safe_obj_name(const nlohmann::json& j, const std::string& key,
+                          const std::string& fallback = "") {
+    if (j.contains(key) && j[key].is_object() && j[key].contains("name"))
+        return j[key]["name"].get<std::string>();
+    if (j.contains(key) && j[key].is_string())
+        return j[key].get<std::string>();
     return fallback;
 }
 
@@ -97,132 +119,105 @@ std::expected<PlayerIdentity, ApiError> fetch_account(
     return parse_account(*result);
 }
 
-MatchData parse_match(const nlohmann::json& j) {
-    MatchData match;
-    auto& meta = j["metadata"];
-    match.match_id = safe_str(meta, "match_id");
-    match.map = safe_str(meta, "map");
-    match.mode = safe_str(meta, "mode");
-    match.game_start = parse_timestamp(meta.value("started_at", int64_t(0)));
-    match.game_length_secs = safe_int(meta, "game_length_in_ms") / 1000;
-    match.region = safe_str(meta, "region");
-    match.platform = safe_str(meta, "platform");
+PlayerMatchSummary parse_stored_match(const nlohmann::json& j) {
+    PlayerMatchSummary s;
+    auto& meta = j["meta"];
+    auto& stats = j["stats"];
+    auto& teams = j["teams"];
 
-    if (j.contains("players")) {
-        for (auto& [team_key, team_players] : j["players"].items()) {
-            for (auto& p : team_players) {
-                MatchPlayer mp;
-                mp.puuid = safe_str(p, "puuid");
-                mp.name = safe_str(p, "name");
-                mp.tag = safe_str(p, "tag");
-                mp.team = team_key;
-                mp.agent = safe_str(p, "agent");
-                mp.tier = safe_int(p, "tier");
+    s.match_id = safe_str(meta, "id");
+    s.map = safe_obj_name(meta, "map");
+    s.mode = safe_str(meta, "mode");
 
-                if (p.contains("stats")) {
-                    auto& s = p["stats"];
-                    mp.stats.kills = safe_int(s, "kills");
-                    mp.stats.deaths = safe_int(s, "deaths");
-                    mp.stats.assists = safe_int(s, "assists");
-                    mp.stats.score = safe_int(s, "score");
-                    mp.stats.bodyshots = safe_int(s, "bodyshots");
-                    mp.stats.headshots = safe_int(s, "headshots");
-                    mp.stats.legshots = safe_int(s, "legshots");
-                    mp.stats.damage_made = safe_int(s, "damage_made");
-                    mp.stats.damage_received = safe_int(s, "damage_received");
-                }
+    if (meta.contains("started_at") && meta["started_at"].is_string()) {
+        s.game_start = parse_iso8601(meta["started_at"].get<std::string>());
+    }
 
-                match.players.push_back(std::move(mp));
+    s.kills = safe_int(stats, "kills");
+    s.deaths = safe_int(stats, "deaths");
+    s.assists = safe_int(stats, "assists");
+    s.score = safe_int(stats, "score");
+    s.agent = safe_obj_name(stats, "character");
+
+    if (stats.contains("damage") && stats["damage"].is_object()) {
+        s.damage_made = safe_int(stats["damage"], "made");
+    }
+
+    std::string my_team = safe_str(stats, "team");
+    std::string my_team_lower = my_team;
+    std::transform(my_team_lower.begin(), my_team_lower.end(),
+                   my_team_lower.begin(), ::tolower);
+
+    int my_rounds = 0;
+    int enemy_rounds = 0;
+    if (teams.is_object()) {
+        for (auto& [team_key, rounds] : teams.items()) {
+            if (team_key == my_team_lower) {
+                my_rounds = rounds.get<int>();
+            } else {
+                enemy_rounds = rounds.get<int>();
             }
         }
     }
 
-    if (j.contains("teams")) {
-        for (auto& [team_id, team_data] : j["teams"].items()) {
-            TeamResult tr;
-            tr.team_id = team_id;
-            tr.rounds_won = safe_int(team_data, "rounds_won");
-            tr.rounds_lost = safe_int(team_data, "rounds_lost");
-            tr.won = team_data.value("won", false);
-            match.teams.push_back(std::move(tr));
-        }
-    }
+    s.rounds_played = my_rounds + enemy_rounds;
+    s.won = my_rounds > enemy_rounds;
 
-    return match;
+    // game_length not available in stored matches, estimate from rounds
+    s.game_length_secs = s.rounds_played * 100; // ~100s per round
+
+    return s;
 }
 
-std::expected<std::vector<MatchData>, ApiError> fetch_matches(
-    const ClientConfig& config, RateLimiter& limiter, Cache& cache,
+std::expected<std::vector<PlayerMatchSummary>, ApiError> fetch_stored_matches(
+    const ClientConfig& config, RateLimiter& limiter,
     const std::string& region, const std::string& name, const std::string& tag,
     int count, ProgressCallback on_progress) {
 
-    std::string platform = "pc";
-    std::string path = "/valorant/v4/matches/" + region + "/" + platform +
-                       "/" + name + "/" + tag + "?mode=competitive&size=" +
-                       std::to_string(std::min(count, 50));
+    std::vector<PlayerMatchSummary> all;
+    constexpr int page_size = 50;
+    int pages_needed = (count + page_size - 1) / page_size;
 
-    auto result = fetch_endpoint(config, limiter, path);
-    if (!result) return std::unexpected(result.error());
+    for (int page = 1; page <= pages_needed; ++page) {
+        int remaining = count - static_cast<int>(all.size());
+        int fetch_size = std::min(remaining, page_size);
 
-    std::vector<MatchData> matches;
-    auto& data = *result;
+        std::string path = "/valorant/v1/stored-matches/" + region + "/" +
+                           name + "/" + tag + "?mode=competitive&size=" +
+                           std::to_string(fetch_size) + "&page=" + std::to_string(page);
 
-    if (!data.is_array()) {
-        return std::unexpected(ApiError{0, "Expected array of matches"});
-    }
-
-    int total = static_cast<int>(data.size());
-    int current = 0;
-
-    for (auto& match_json : data) {
-        ++current;
-        if (on_progress) on_progress(current, total);
-
-        std::string mid = safe_str(match_json["metadata"], "match_id");
-
-        auto cached = cache.get_match(mid);
-        if (cached) {
-            matches.push_back(parse_match(*cached));
-            continue;
+        auto result = fetch_endpoint(config, limiter, path);
+        if (!result) {
+            if (all.empty()) return std::unexpected(result.error());
+            break; // return what we have
         }
 
-        cache.store_match(mid, match_json);
-        matches.push_back(parse_match(match_json));
+        auto& data = *result;
+        if (!data.is_array() || data.empty()) break;
+
+        for (auto& match_json : data) {
+            all.push_back(parse_stored_match(match_json));
+        }
+
+        if (on_progress) {
+            on_progress(static_cast<int>(all.size()), count);
+        }
+
+        if (static_cast<int>(data.size()) < fetch_size) break; // no more data
     }
 
-    return matches;
+    std::ranges::sort(all, {}, &PlayerMatchSummary::game_start);
+    return all;
 }
 
 MmrHistoryEntry parse_mmr_entry(const nlohmann::json& j) {
     MmrHistoryEntry entry;
     entry.match_id = safe_str(j, "match_id");
-    entry.rr_change = safe_int(j, "last_mmr_change");
+    entry.rr_change = safe_int(j, "mmr_change_to_last_game");
     entry.rr_after = safe_int(j, "elo");
-    entry.tier_after = safe_int(j, "tier");
-    entry.timestamp = parse_timestamp(j.value("date_raw", int64_t(0)));
+    entry.tier_after = safe_int(j, "currenttier");
+    entry.timestamp = parse_epoch(j.value("date_raw", int64_t(0)));
     return entry;
-}
-
-MmrSnapshot parse_mmr_snapshot(const nlohmann::json& j) {
-    MmrSnapshot snap;
-    snap.current_rr = safe_int(j, "current_data_elo", 0);
-    if (j.contains("current_data")) {
-        auto& cd = j["current_data"];
-        snap.current_rr = safe_int(cd, "elo");
-        snap.current_tier = safe_int(cd, "currenttier");
-        snap.tier_name = safe_str(cd, "currenttierpatched");
-    }
-    return snap;
-}
-
-std::expected<MmrSnapshot, ApiError> fetch_mmr(
-    const ClientConfig& config, RateLimiter& limiter,
-    const std::string& region, const std::string& name, const std::string& tag) {
-
-    auto result = fetch_endpoint(config, limiter,
-                                 "/valorant/v2/mmr/" + region + "/" + name + "/" + tag);
-    if (!result) return std::unexpected(result.error());
-    return parse_mmr_snapshot(*result);
 }
 
 std::expected<std::vector<MmrHistoryEntry>, ApiError> fetch_mmr_history(
@@ -257,63 +252,22 @@ std::expected<std::vector<MmrHistoryEntry>, ApiError> fetch_mmr_history(
     return entries;
 }
 
-std::vector<PlayerMatchSummary> build_summaries(
-    const std::vector<MatchData>& matches,
-    const std::vector<MmrHistoryEntry>& mmr_history,
-    const std::string& puuid) {
+void apply_rr_to_summaries(
+    std::vector<PlayerMatchSummary>& summaries,
+    const std::vector<MmrHistoryEntry>& mmr_history) {
 
     std::unordered_map<std::string, int> rr_by_match;
     for (auto& entry : mmr_history) {
         rr_by_match[entry.match_id] = entry.rr_change;
     }
 
-    std::vector<PlayerMatchSummary> summaries;
-    for (auto& match : matches) {
-        const MatchPlayer* me = nullptr;
-        for (auto& p : match.players) {
-            if (p.puuid == puuid) {
-                me = &p;
-                break;
-            }
-        }
-        if (!me) continue;
-
-        bool won = false;
-        int rounds_played = 0;
-        for (auto& team : match.teams) {
-            if (team.team_id == me->team) {
-                won = team.won;
-                rounds_played = team.rounds_won + team.rounds_lost;
-                break;
-            }
-        }
-
-        PlayerMatchSummary s;
-        s.match_id = match.match_id;
-        s.map = match.map;
-        s.mode = match.mode;
-        s.agent = me->agent;
-        s.game_start = match.game_start;
-        s.game_length_secs = match.game_length_secs;
-        s.kills = me->stats.kills;
-        s.deaths = me->stats.deaths;
-        s.assists = me->stats.assists;
-        s.score = me->stats.score;
-        s.damage_made = me->stats.damage_made;
-        s.rounds_played = rounds_played;
-        s.won = won;
-
-        auto rr_it = rr_by_match.find(match.match_id);
-        if (rr_it != rr_by_match.end()) {
-            s.rr_change = rr_it->second;
+    for (auto& s : summaries) {
+        auto it = rr_by_match.find(s.match_id);
+        if (it != rr_by_match.end()) {
+            s.rr_change = it->second;
             s.rr_available = true;
         }
-
-        summaries.push_back(std::move(s));
     }
-
-    std::ranges::sort(summaries, {}, &PlayerMatchSummary::game_start);
-    return summaries;
 }
 
 } // namespace valorant

@@ -178,4 +178,143 @@ DecayCurveModel decay_curve(
     return model;
 }
 
+std::vector<AgentPerformance> performance_by_agent(
+    const std::vector<PlayerMatchSummary>& matches) {
+
+    struct Acc {
+        double total_kda = 0.0;
+        double total_dpr = 0.0;
+        int wins = 0;
+        int count = 0;
+    };
+
+    std::unordered_map<std::string, Acc> by_agent;
+    for (auto& m : matches) {
+        auto& a = by_agent[m.agent];
+        a.total_kda += m.kda();
+        a.total_dpr += m.damage_per_round();
+        a.wins += m.won ? 1 : 0;
+        a.count++;
+    }
+
+    int total = static_cast<int>(matches.size());
+    std::vector<AgentPerformance> result;
+    for (auto& [agent, acc] : by_agent) {
+        result.push_back({
+            .agent = agent,
+            .games = acc.count,
+            .avg_kda = acc.total_kda / acc.count,
+            .win_rate = static_cast<double>(acc.wins) / acc.count,
+            .avg_damage_per_round = acc.total_dpr / acc.count,
+            .pick_rate = total > 0 ? static_cast<double>(acc.count) / total : 0.0,
+        });
+    }
+
+    std::ranges::sort(result, std::greater{}, &AgentPerformance::games);
+    return result;
+}
+
+std::vector<MapPerformance> performance_by_map(
+    const std::vector<PlayerMatchSummary>& matches) {
+
+    struct Acc {
+        double total_kda = 0.0;
+        double total_score = 0.0;
+        int wins = 0;
+        int count = 0;
+    };
+
+    std::unordered_map<std::string, Acc> by_map;
+    for (auto& m : matches) {
+        auto& a = by_map[m.map];
+        a.total_kda += m.kda();
+        a.total_score += m.score;
+        a.wins += m.won ? 1 : 0;
+        a.count++;
+    }
+
+    std::vector<MapPerformance> result;
+    for (auto& [map, acc] : by_map) {
+        result.push_back({
+            .map = map,
+            .games = acc.count,
+            .avg_kda = acc.total_kda / acc.count,
+            .win_rate = static_cast<double>(acc.wins) / acc.count,
+            .avg_score = acc.total_score / acc.count,
+        });
+    }
+
+    std::ranges::sort(result, std::greater{}, &MapPerformance::games);
+    return result;
+}
+
+OverviewStats compute_overview(
+    const std::vector<PlayerMatchSummary>& matches,
+    const std::vector<AgentPerformance>& agents,
+    const std::vector<MapPerformance>& maps) {
+
+    OverviewStats stats;
+    stats.total_games = static_cast<int>(matches.size());
+
+    int total_headshots = 0, total_bodyshots = 0, total_legshots = 0;
+
+    for (auto& m : matches) {
+        stats.total_kills += m.kills;
+        stats.total_deaths += m.deaths;
+        stats.total_assists += m.assists;
+        stats.total_rr += m.rr_change;
+        if (m.won) stats.wins++;
+        else stats.losses++;
+    }
+
+    if (stats.total_deaths > 0) {
+        stats.overall_kda = static_cast<double>(stats.total_kills + stats.total_assists)
+                            / stats.total_deaths;
+    } else {
+        stats.overall_kda = static_cast<double>(stats.total_kills + stats.total_assists);
+    }
+
+    if (stats.total_games > 0) {
+        stats.win_rate = static_cast<double>(stats.wins) / stats.total_games;
+    }
+
+    double total_dpr = 0.0;
+    for (auto& m : matches) total_dpr += m.damage_per_round();
+    if (stats.total_games > 0) stats.avg_damage_per_round = total_dpr / stats.total_games;
+
+    // Best agent by KDA (min 3 games)
+    for (auto& a : agents) {
+        if (a.games >= 3 && a.avg_kda > stats.best_agent_kda) {
+            stats.best_agent = a.agent;
+            stats.best_agent_kda = a.avg_kda;
+        }
+    }
+
+    // Worst map by WR (min 3 games)
+    for (auto& m : maps) {
+        if (m.games >= 3 && m.win_rate < stats.worst_map_wr) {
+            stats.worst_map = m.map;
+            stats.worst_map_wr = m.win_rate;
+        }
+    }
+
+    // Streaks
+    int cur_streak = 0;
+    int max_win = 0, max_loss = 0;
+    for (auto& m : matches) {
+        if (m.won) {
+            cur_streak = cur_streak > 0 ? cur_streak + 1 : 1;
+            max_win = std::max(max_win, cur_streak);
+        } else {
+            cur_streak = cur_streak < 0 ? cur_streak - 1 : -1;
+            max_loss = std::max(max_loss, std::abs(cur_streak));
+        }
+    }
+    stats.longest_win_streak = max_win;
+    stats.longest_loss_streak = max_loss;
+    stats.current_streak = cur_streak;
+
+    return stats;
+}
+
 } // namespace valorant

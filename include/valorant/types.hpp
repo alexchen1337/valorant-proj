@@ -18,47 +18,6 @@ struct PlayerIdentity {
     std::string card_small;
 };
 
-struct PlayerStats {
-    int kills = 0;
-    int deaths = 0;
-    int assists = 0;
-    int score = 0;
-    int bodyshots = 0;
-    int headshots = 0;
-    int legshots = 0;
-    int damage_made = 0;
-    int damage_received = 0;
-};
-
-struct TeamResult {
-    std::string team_id;
-    int rounds_won = 0;
-    int rounds_lost = 0;
-    bool won = false;
-};
-
-struct MatchPlayer {
-    std::string puuid;
-    std::string name;
-    std::string tag;
-    std::string team;
-    std::string agent;
-    int tier = 0;
-    PlayerStats stats;
-};
-
-struct MatchData {
-    std::string match_id;
-    std::string map;
-    std::string mode;
-    TimePoint game_start;
-    int game_length_secs = 0;
-    std::string region;
-    std::string platform;
-    std::vector<MatchPlayer> players;
-    std::vector<TeamResult> teams;
-};
-
 struct PlayerMatchSummary {
     std::string match_id;
     std::string map;
@@ -107,14 +66,6 @@ struct MmrHistoryEntry {
     TimePoint timestamp;
 };
 
-struct MmrSnapshot {
-    int current_rr = 0;
-    int current_tier = 0;
-    std::string tier_name;
-    int elo = 0;
-    std::vector<MmrHistoryEntry> history;
-};
-
 // Analytics output types
 
 struct HourlyPerformance {
@@ -151,6 +102,44 @@ struct DecayCurveModel {
     double intercept = 0.0;
     double r_squared = 0.0;
     std::vector<std::pair<int, double>> points; // (game_number, avg_kda)
+};
+
+struct AgentPerformance {
+    std::string agent;
+    int games = 0;
+    double avg_kda = 0.0;
+    double win_rate = 0.0;
+    double avg_damage_per_round = 0.0;
+    double pick_rate = 0.0;
+};
+
+struct MapPerformance {
+    std::string map;
+    int games = 0;
+    double avg_kda = 0.0;
+    double win_rate = 0.0;
+    double avg_score = 0.0;
+};
+
+struct OverviewStats {
+    int total_games = 0;
+    int wins = 0;
+    int losses = 0;
+    double overall_kda = 0.0;
+    double win_rate = 0.0;
+    int total_kills = 0;
+    int total_deaths = 0;
+    int total_assists = 0;
+    double avg_damage_per_round = 0.0;
+    int total_rr = 0;
+    std::string best_agent;
+    double best_agent_kda = 0.0;
+    std::string worst_map;
+    double worst_map_wr = 1.0;
+    int longest_win_streak = 0;
+    int longest_loss_streak = 0;
+    int current_streak = 0; // positive = wins, negative = losses
+    double headshot_pct = 0.0;
 };
 
 struct ApiError {
