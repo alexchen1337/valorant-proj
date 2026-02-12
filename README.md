@@ -2,6 +2,11 @@
 
 A C++ CLI tool that analyzes Valorant match history to detect how fatigue across gaming sessions degrades KDA, win rate, and RR gains. Features an interactive terminal UI for exploring reports.
 
+## Demo
+
+https://github.com/user-attachments/assets/cca064f3-fe72-471a-9061-86ab7785de05
+
+
 ## Features
 
 - **Performance by Time of Day** — average KDA and win rate bucketed by hour
